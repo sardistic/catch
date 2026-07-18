@@ -211,11 +211,30 @@ main { overflow: hidden; }
 .primary-button svg { width: 17px; }
 
 .platforms { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 24px; }
-.platform { display: inline-flex; align-items: center; gap: 6px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; font-weight: 750; background: rgba(255,255,255,.3); }
-.platform b { display: grid; place-items: center; width: 16px; height: 16px; color: var(--ink); font-size: 13px; }
-.youtube b { color: #f22626; }
-.instagram b { color: #cc397b; font-size: 17px; }
-.tiktok b { color: #111; text-shadow: 1px 0 #29f0ea, -1px 0 #ff2d55; }
+.platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 7px 12px 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgba(255,255,255,.42);
+  font-size: 11px;
+  font-weight: 750;
+  transition: border-color 160ms ease, color 160ms ease, transform 160ms ease, background 160ms ease;
+}
+.platform:hover { transform: translateY(-1px); border-color: rgba(23,25,20,.3); color: var(--ink); background: rgba(255,255,255,.7); }
+.platform-icon { width: 18px; height: 18px; display: grid; place-items: center; flex: 0 0 auto; }
+.platform-icon svg { width: 100%; height: 100%; display: block; fill: currentColor; }
+.youtube .platform-icon { color: #f03a32; }
+.youtube .icon-cutout { fill: var(--card); }
+.twitter .platform-icon { width: 16px; height: 16px; color: #171914; }
+.instagram .platform-icon { color: #d33a78; }
+.instagram .platform-icon svg { fill: none; stroke: currentColor; stroke-width: 1.8; }
+.instagram .icon-dot { fill: currentColor; stroke: none; }
+.tiktok .platform-icon { color: #171914; filter: drop-shadow(1px 0 0 #34e4df) drop-shadow(-1px 0 0 #f43d67); }
 
 .status {
   max-width: 680px;
