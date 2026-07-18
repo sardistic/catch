@@ -1,0 +1,6 @@
+.git
+.gitignore
+README.md
+downloads
+node_modules
+npm-debug.log

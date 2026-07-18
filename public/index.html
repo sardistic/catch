@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Save public videos from YouTube, X, Instagram, and TikTok." />
+    <title>Catch — save the good stuff</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Catch home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 20h14" /></svg>
+        </span>
+        <span>catch</span>
+      </a>
+      <p class="header-note">Public media, made portable.</p>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="eyebrow"><span></span> One link. Your file.</div>
+        <h1 id="hero-title">Save the<br /><em>good stuff.</em></h1>
+        <p class="intro">Videos and shorts from the places you scroll most. Paste a public link and pick your quality.</p>
+
+        <form class="link-form" id="link-form">
+          <label class="sr-only" for="media-url">Video URL</label>
+          <div class="input-wrap">
+            <svg class="link-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1" /></svg>
+            <input id="media-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste a video link here…" required />
+            <button class="paste-button" id="paste-button" type="button">Paste</button>
+          </div>
+          <button class="primary-button" id="inspect-button" type="submit">
+            <span>Find video</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+          </button>
+        </form>
+
+        <div class="platforms" aria-label="Supported platforms">
+          <span class="platform youtube"><b>▶</b>YouTube</span>
+          <span class="platform twitter"><b>𝕏</b>Twitter</span>
+          <span class="platform instagram"><b>◎</b>Instagram</span>
+          <span class="platform tiktok"><b>♪</b>TikTok</span>
+        </div>
+
+        <div class="status" id="status" role="status" aria-live="polite" hidden></div>
+      </section>
+
+      <section class="result" id="result" aria-labelledby="result-title" hidden>
+        <div class="result-media">
+          <img id="thumbnail" alt="" />
+          <span class="duration" id="duration"></span>
+          <span class="platform-tag" id="platform-tag"></span>
+        </div>
+        <div class="result-details">
+          <p class="result-kicker">Ready to catch</p>
+          <h2 id="result-title"></h2>
+          <p class="creator" id="creator"></p>
+
+          <div class="choice-group">
+            <span class="choice-label">Format</span>
+            <div class="segmented" role="group" aria-label="File format">
+              <button class="segment active" type="button" data-kind="video">Video <small>MP4</small></button>
+              <button class="segment" type="button" data-kind="audio">Audio <small>MP3</small></button>
+            </div>
+          </div>
+
+          <div class="choice-group" id="quality-group">
+            <span class="choice-label">Quality</span>
+            <div class="quality-options" id="quality-options"></div>
+          </div>
+
+          <button class="download-button" id="download-button" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 20h14" /></svg>
+            <span>Download video</span>
+          </button>
+          <p class="download-note">Large or high-resolution videos may take a moment to prepare.</p>
+        </div>
+      </section>
+
+      <section class="how-it-works" aria-labelledby="how-title">
+        <p class="section-number">01 — 03</p>
+        <h2 id="how-title">Simple by design.</h2>
+        <div class="steps">
+          <article><span>01</span><h3>Paste</h3><p>Drop in a public video or short link.</p></article>
+          <article><span>02</span><h3>Choose</h3><p>Pick video, audio, and the quality you want.</p></article>
+          <article><span>03</span><h3>Catch</h3><p>Save the file directly to your device.</p></article>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <a class="brand footer-brand" href="/">catch<span>.</span></a>
+      <div class="footer-meta">
+        <p>Only download content you own or have permission to use. Private and DRM-protected media isn’t supported.</p>
+        <a class="sardistic-credit" href="https://sardistic.com" target="_blank" rel="noopener noreferrer" aria-label="By sardistic.com">
+          <span class="terminal-mark" aria-hidden="true">$</span>
+          <span class="credit-by">by</span>
+          <span class="credit-name">sardistic.com</span>
+        </a>
+      </div>
+    </footer>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
