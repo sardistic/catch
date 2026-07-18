@@ -293,6 +293,33 @@ footer p { max-width: 520px; margin: 0; color: var(--muted); font-size: 10px; li
   gap: 17px;
 }
 
+.footer-links {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.github-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  transition: color 160ms ease, transform 160ms ease;
+}
+
+.github-link svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+}
+
+.github-link:hover { color: var(--ink); transform: translateY(-1px); }
+
 .sardistic-credit {
   position: relative;
   display: inline-flex;
@@ -356,6 +383,7 @@ footer p { max-width: 520px; margin: 0; color: var(--muted); font-size: 10px; li
   footer { align-items: flex-start; flex-direction: column; }
   footer p { text-align: left; }
   .footer-meta { align-items: flex-start; }
+  .footer-links { align-items: flex-start; flex-direction: column-reverse; gap: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
