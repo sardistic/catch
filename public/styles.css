@@ -322,7 +322,16 @@ footer p { max-width: 520px; margin: 0; color: var(--muted); font-size: 10px; li
 
 .sardistic-credit:hover { color: #463646; transform: translateY(-1px); }
 .sardistic-credit:hover::after { transform: scaleX(.82); }
-.terminal-mark { color: #18aef2; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 17px; text-shadow: 0 0 9px rgba(24, 174, 242, .35); }
+.sardistic-logo {
+  width: 19px;
+  height: 19px;
+  display: block;
+  flex: 0 0 auto;
+  align-self: center;
+  object-fit: cover;
+  border-radius: 3px;
+  box-shadow: 0 0 10px rgba(24, 174, 242, .22);
+}
 .credit-by { color: var(--muted); font-family: Inter, ui-sans-serif, sans-serif; font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .credit-name { text-shadow: 0 1px rgba(255,255,255,.9); }
 
