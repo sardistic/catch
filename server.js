@@ -59,7 +59,12 @@ function applySecurityHeaders(res) {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+    // analytics.sardistic.com is our own Umami instance: it serves the tracker
+    // (script-src) and receives the beacon (connect-src). Everything else stays
+    // locked to 'self' — this widens the policy by exactly one origin we run.
+    "default-src 'self'; img-src 'self' https: data:; style-src 'self';" +
+      " script-src 'self' https://analytics.sardistic.com;" +
+      " connect-src 'self' https://analytics.sardistic.com; frame-ancestors 'none'"
   );
 }
 
