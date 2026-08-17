@@ -293,61 +293,6 @@ function fromApiMedia(media) {
   return null;
 }
 
-function fromGraphNode(node) {
-  const image = bestCandidate(
-    (node.display_resources || []).map((resource) => ({
-      url: resource.src,
-      width: resource.config_width,
-      height: resource.config_height
-    }))
-  ) || (node.display_url ? { url: node.display_url } : null);
-
-  if (node.is_video && node.video_url) {
-    return {
-      kind: 'video',
-      url: node.video_url,
-      width: node.dimensions?.width,
-      height: node.dimensions?.height,
-      preview: image?.url
-    };
-  }
-  if (!image) return null;
-  return {
-    kind: 'image',
-    url: image.url,
-    width: image.width || node.dimensions?.width,
-    height: image.height || node.dimensions?.height,
-    preview: image.url
-  };
-}
-
-async function instagramViaGraphql(shortcode) {
-  const variables = JSON.stringify({
-    shortcode,
-    fetch_tagged_user_count: null,
-    hoisted_comment_id: null,
-    hoisted_reply_id: null
-  });
-  const query = new URLSearchParams({ doc_id: '8845758582119845', variables });
-  const payload = await instagramJson(
-    `https://www.instagram.com/graphql/query/?${query}`,
-    `https://www.instagram.com/p/${shortcode}/`
-  );
-
-  const media = payload?.data?.xdt_shortcode_media;
-  if (!media) return null;
-
-  const nodes = media.edge_sidecar_to_children?.edges?.map((edge) => edge.node) || [media];
-  const items = nodes.map(fromGraphNode).filter(Boolean);
-  if (!items.length) return null;
-
-  return {
-    items,
-    creator: media.owner?.username || media.owner?.full_name || null,
-    caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || null
-  };
-}
-
 const SHORTCODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
 function shortcodeToPk(shortcode) {
@@ -408,10 +353,57 @@ async function instagramViaEmbed(shortcode) {
   };
 }
 
-async function extractInstagramPost(shortcode) {
-  const strategies = [instagramViaApi, instagramViaGraphql, instagramViaEmbed];
+function fromYtDlpEntry(entry) {
+  // yt-dlp lists thumbnails smallest first, and the last one is the uncropped
+  // original — for a photo that *is* the file we want.
+  const preview = entry.thumbnail || entry.thumbnails?.at(-1)?.url || null;
+  const video = (entry.formats || [])
+    .filter((format) => typeof format.url === 'string' && /^https?:/.test(format.url))
+    .filter((format) => !format.protocol || /^https?$/.test(format.protocol))
+    .sort((a, b) => (Number(b.height) || 0) - (Number(a.height) || 0))[0];
+
+  if (video) {
+    return {
+      kind: 'video',
+      url: video.url,
+      width: Number(video.width) || null,
+      height: Number(video.height) || null,
+      preview
+    };
+  }
+  if (!preview) return null;
+  return { kind: 'image', url: preview, width: null, height: null, preview };
+}
+
+// yt-dlp reads Instagram's post payload but refuses to emit an image-only post
+// unless told to ignore the missing formats; its thumbnails carry the images.
+async function instagramViaYtDlp(shortcode, mediaUrl) {
+  const output = await runYtDlp([
+    '--dump-single-json',
+    '--ignore-no-formats-error',
+    '--skip-download',
+    '--no-warnings',
+    '--socket-timeout',
+    '15',
+    mediaUrl
+  ]);
+
+  const info = JSON.parse(output);
+  const entries = info._type === 'playlist' ? info.entries || [] : [info];
+  const items = entries.map(fromYtDlpEntry).filter(Boolean);
+  if (!items.length) return null;
+
+  return {
+    items,
+    creator: info.channel || info.uploader || null,
+    caption: info.description || null
+  };
+}
+
+async function extractInstagramPost(shortcode, mediaUrl) {
+  const strategies = [instagramViaYtDlp, instagramViaApi, instagramViaEmbed];
   for (const strategy of strategies) {
-    const post = await strategy(shortcode).catch(() => null);
+    const post = await strategy(shortcode, mediaUrl).catch(() => null);
     if (post?.items?.length) return post;
   }
   return null;
@@ -603,7 +595,7 @@ async function downloadGalleryZip(req, res) {
   const shortcode = instagramShortcode(mediaUrl);
   if (!shortcode) throw new Error('Paste an Instagram post link to download a whole post.');
 
-  const post = await extractInstagramPost(shortcode);
+  const post = await extractInstagramPost(shortcode, mediaUrl);
   if (!post) throw new Error('Could not read that post again. It may be private or rate-limited.');
 
   const gallery = buildGallery(post, shortcode, mediaUrl);
@@ -651,7 +643,7 @@ async function inspectMedia(req, res) {
   let gallery = null;
 
   if (shortcode) {
-    const post = await extractInstagramPost(shortcode).catch(() => null);
+    const post = await extractInstagramPost(shortcode, mediaUrl).catch(() => null);
     if (post) gallery = buildGallery(post, shortcode, mediaUrl);
   }
 

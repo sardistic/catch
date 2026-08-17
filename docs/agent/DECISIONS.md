@@ -6,9 +6,9 @@ Record durable architectural and operational decisions here.
 
 Context: `yt-dlp` cannot return Instagram images at all. Its extractor discards carousel children that have no `video_versions`, so photo posts fail with "No video formats found".
 
-Decision: Talk to Instagram directly from `server.js` for `/p/`, `/reel/`, and `/tv/` links, trying the web v1 API, then GraphQL, then the embed page. Serve the resulting CDN URLs through an HMAC-signed proxy (`/api/asset`) and bundle whole posts with a hand-written store-only ZIP writer, keeping the project dependency-free. Video-only posts still prefer `yt-dlp` for its quality and audio options.
+Decision: Keep using `yt-dlp` to *reach* the post — it extracts the payload fine and lists every carousel image under `thumbnails`; it just refuses to emit an entry that has no video formats. Running it with `--ignore-no-formats-error` yields the images, and the last thumbnail of each entry is the uncropped original. Serve those CDN URLs through an HMAC-signed proxy (`/api/asset`) and bundle whole posts with a hand-written store-only ZIP writer, keeping the project dependency-free. Video-only posts still take the normal `yt-dlp` path for its quality and audio options.
 
-Consequences: Instagram's private endpoints can change shape or throttle by IP, so the strategy chain and the optional `INSTAGRAM_COOKIE` env var exist as hedges. The proxy is restricted to Instagram CDN hostnames and short-lived signed links so it cannot be abused as an open proxy.
+Consequences: Instagram's own endpoints move constantly — hand-rolled API and GraphQL calls written against them broke within a day, while `yt-dlp` tracks them for us. Two direct fallbacks remain for when `yt-dlp` cannot help: the web v1 API (the useful path once `INSTAGRAM_COOKIE` is set) and the embed page. The trade is that photo support now depends on a current `yt-dlp` in the image. The proxy is restricted to Instagram CDN hostnames and short-lived signed links so it cannot be abused as an open proxy.
 
 ### Date — Decision title
 

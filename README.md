@@ -20,7 +20,7 @@ Then open <http://127.0.0.1:3000>.
 
 ### Instagram access
 
-Instagram serves photo posts to logged-out clients but rate-limits aggressively per IP. If posts start failing with "private or rate-limited", set a cookie header from a logged-in browser session:
+Photo posts are read through `yt-dlp` (with `--ignore-no-formats-error`, since an image post has no video formats), so keep it current — older builds cannot reach Instagram at all. If posts still fail with "private or rate-limited", set a cookie header from a logged-in browser session:
 
 ```powershell
 $env:INSTAGRAM_COOKIE = "sessionid=…; csrftoken=…"
