@@ -1,6 +1,7 @@
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { createReadStream, promises: fs } = require('node:fs');
+const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const path = require('node:path');
 const os = require('node:os');
@@ -13,6 +14,17 @@ const MAX_BODY_BYTES = 16 * 1024;
 const MAX_METADATA_BYTES = 12 * 1024 * 1024;
 const MAX_CONCURRENT_JOBS = 3;
 const JOB_TIMEOUT_MS = 20 * 60 * 1000;
+
+const INSTAGRAM_APP_ID = '936619743392459';
+const INSTAGRAM_COOKIE = process.env.INSTAGRAM_COOKIE || '';
+const BROWSER_UA =
+  process.env.BROWSER_USER_AGENT ||
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+const ASSET_SECRET = crypto.randomBytes(32);
+const ASSET_TTL_MS = 6 * 60 * 60 * 1000;
+const ASSET_HOST_PATTERN = /(^|\.)(cdninstagram\.com|fbcdn\.net)$/;
+const MAX_ASSET_BYTES = 120 * 1024 * 1024;
+const MAX_ZIP_BYTES = 600 * 1024 * 1024;
 
 const SUPPORTED_HOSTS = [
   'youtube.com',
@@ -207,9 +219,465 @@ function availableQualities(formats = []) {
   return options;
 }
 
+function instagramShortcode(mediaUrl) {
+  const parsed = new URL(mediaUrl);
+  if (!/(^|\.)instagram\.com$/.test(parsed.hostname.toLowerCase().replace(/^www\./, ''))) return null;
+  const match = parsed.pathname.match(/\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]{5,32})/);
+  return match ? match[1] : null;
+}
+
+let instagramSession = { cookie: '', expires: 0 };
+
+async function instagramCookie() {
+  if (INSTAGRAM_COOKIE) return INSTAGRAM_COOKIE;
+  if (instagramSession.expires > Date.now()) return instagramSession.cookie;
+
+  let cookie = '';
+  try {
+    const response = await fetch('https://www.instagram.com/', {
+      headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'en-US,en;q=0.9' },
+      signal: AbortSignal.timeout(12_000)
+    });
+    cookie = (response.headers.getSetCookie?.() || [])
+      .map((entry) => entry.split(';')[0])
+      .filter(Boolean)
+      .join('; ');
+  } catch {
+    cookie = '';
+  }
+
+  instagramSession = { cookie, expires: Date.now() + (cookie ? 10 * 60 * 1000 : 60 * 1000) };
+  return cookie;
+}
+
+async function instagramHeaders(referer) {
+  const cookie = await instagramCookie();
+  const csrf = (cookie.match(/csrftoken=([^;]+)/) || [])[1] || '';
+  return {
+    'User-Agent': BROWSER_UA,
+    'Accept-Language': 'en-US,en;q=0.9',
+    'X-IG-App-ID': INSTAGRAM_APP_ID,
+    'X-CSRFToken': csrf,
+    'X-Requested-With': 'XMLHttpRequest',
+    Referer: referer,
+    ...(cookie ? { Cookie: cookie } : {})
+  };
+}
+
+async function instagramJson(requestUrl, referer) {
+  const response = await fetch(requestUrl, {
+    headers: await instagramHeaders(referer),
+    signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok) return null;
+  return response.json().catch(() => null);
+}
+
+function bestCandidate(candidates) {
+  return [...(candidates || [])]
+    .filter((candidate) => typeof candidate?.url === 'string')
+    .sort((a, b) => (Number(b.width) || 0) - (Number(a.width) || 0))[0];
+}
+
+// Instagram's API and GraphQL responses describe carousel children differently;
+// both collapse into the same { kind, url, width, height, preview } shape.
+function fromApiMedia(media) {
+  const video = bestCandidate(media.video_versions);
+  const image = bestCandidate(media.image_versions2?.candidates);
+  if (video) {
+    return { kind: 'video', url: video.url, width: video.width, height: video.height, preview: image?.url };
+  }
+  if (image) {
+    return { kind: 'image', url: image.url, width: image.width, height: image.height, preview: image.url };
+  }
+  return null;
+}
+
+function fromGraphNode(node) {
+  const image = bestCandidate(
+    (node.display_resources || []).map((resource) => ({
+      url: resource.src,
+      width: resource.config_width,
+      height: resource.config_height
+    }))
+  ) || (node.display_url ? { url: node.display_url } : null);
+
+  if (node.is_video && node.video_url) {
+    return {
+      kind: 'video',
+      url: node.video_url,
+      width: node.dimensions?.width,
+      height: node.dimensions?.height,
+      preview: image?.url
+    };
+  }
+  if (!image) return null;
+  return {
+    kind: 'image',
+    url: image.url,
+    width: image.width || node.dimensions?.width,
+    height: image.height || node.dimensions?.height,
+    preview: image.url
+  };
+}
+
+async function instagramViaGraphql(shortcode) {
+  const variables = JSON.stringify({
+    shortcode,
+    fetch_tagged_user_count: null,
+    hoisted_comment_id: null,
+    hoisted_reply_id: null
+  });
+  const query = new URLSearchParams({ doc_id: '8845758582119845', variables });
+  const payload = await instagramJson(
+    `https://www.instagram.com/graphql/query/?${query}`,
+    `https://www.instagram.com/p/${shortcode}/`
+  );
+
+  const media = payload?.data?.xdt_shortcode_media;
+  if (!media) return null;
+
+  const nodes = media.edge_sidecar_to_children?.edges?.map((edge) => edge.node) || [media];
+  const items = nodes.map(fromGraphNode).filter(Boolean);
+  if (!items.length) return null;
+
+  return {
+    items,
+    creator: media.owner?.username || media.owner?.full_name || null,
+    caption: media.edge_media_to_caption?.edges?.[0]?.node?.text || null
+  };
+}
+
+const SHORTCODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+
+function shortcodeToPk(shortcode) {
+  let value = 0n;
+  for (const character of shortcode.slice(0, 11)) {
+    const index = SHORTCODE_ALPHABET.indexOf(character);
+    if (index < 0) return null;
+    value = value * 64n + BigInt(index);
+  }
+  return value.toString();
+}
+
+async function instagramViaApi(shortcode) {
+  const pk = shortcodeToPk(shortcode);
+  if (!pk) return null;
+
+  const payload = await instagramJson(
+    `https://www.instagram.com/api/v1/media/${pk}/info/`,
+    `https://www.instagram.com/p/${shortcode}/`
+  );
+  const post = payload?.items?.[0];
+  if (!post) return null;
+
+  const children = post.carousel_media?.length ? post.carousel_media : [post];
+  const items = children.map(fromApiMedia).filter(Boolean);
+  if (!items.length) return null;
+
+  return {
+    items,
+    creator: post.user?.username || post.user?.full_name || null,
+    caption: post.caption?.text || null
+  };
+}
+
+async function instagramViaEmbed(shortcode) {
+  const response = await fetch(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
+    headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'en-US,en;q=0.9' },
+    signal: AbortSignal.timeout(15_000)
+  });
+  if (!response.ok) return null;
+
+  const html = await response.text();
+  const urls = new Set();
+  for (const match of html.matchAll(/"display_url":"(https:[^"]+)"/g)) {
+    urls.add(JSON.parse(`"${match[1]}"`));
+  }
+  if (!urls.size) {
+    const single = html.match(/class="EmbeddedMediaImage"[^>]+src="([^"]+)"/);
+    if (single) urls.add(single[1].replace(/&amp;/g, '&'));
+  }
+  if (!urls.size) return null;
+
+  const username = html.match(/"username":"([^"]+)"/);
+  return {
+    items: [...urls].map((url) => ({ kind: 'image', url, preview: url })),
+    creator: username ? username[1] : null,
+    caption: null
+  };
+}
+
+async function extractInstagramPost(shortcode) {
+  const strategies = [instagramViaApi, instagramViaGraphql, instagramViaEmbed];
+  for (const strategy of strategies) {
+    const post = await strategy(shortcode).catch(() => null);
+    if (post?.items?.length) return post;
+  }
+  return null;
+}
+
+function signAsset(url, filename) {
+  const payload = Buffer.from(
+    JSON.stringify({ u: url, n: filename, e: Date.now() + ASSET_TTL_MS }),
+    'utf8'
+  ).toString('base64url');
+  const signature = crypto.createHmac('sha256', ASSET_SECRET).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifyAsset(token) {
+  const [payload, signature] = String(token || '').split('.');
+  if (!payload || !signature) throw new Error('This link is no longer valid.');
+
+  const expected = crypto.createHmac('sha256', ASSET_SECRET).update(payload).digest('base64url');
+  const given = Buffer.from(signature);
+  const wanted = Buffer.from(expected);
+  if (given.length !== wanted.length || !crypto.timingSafeEqual(given, wanted)) {
+    throw new Error('This link is no longer valid.');
+  }
+
+  const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+  if (!data.e || data.e < Date.now()) throw new Error('This link has expired. Look up the post again.');
+
+  const assetUrl = new URL(data.u);
+  if (assetUrl.protocol !== 'https:' || !ASSET_HOST_PATTERN.test(assetUrl.hostname.toLowerCase())) {
+    throw new Error('This link is no longer valid.');
+  }
+  return { url: assetUrl.toString(), filename: data.n };
+}
+
+function assetExtension(url, kind) {
+  const extension = path.extname(new URL(url).pathname).toLowerCase();
+  if (/^\.(jpg|jpeg|png|webp|heic|mp4|webm)$/.test(extension)) return extension;
+  return kind === 'video' ? '.mp4' : '.jpg';
+}
+
+function buildGallery(post, shortcode, mediaUrl) {
+  const creator = post.creator ? `@${post.creator}` : 'Unknown creator';
+  const caption = (post.caption || '').split('\n')[0].trim();
+  const title = caption ? caption.slice(0, 120) : `Instagram post by ${creator}`;
+
+  const items = post.items.map((item, index) => {
+    const position = String(index + 1).padStart(2, '0');
+    const filename = `${shortcode}-${position}${assetExtension(item.url, item.kind)}`;
+    const token = signAsset(item.url, filename);
+    return {
+      kind: item.kind,
+      filename,
+      width: Number(item.width) || null,
+      height: Number(item.height) || null,
+      preview: `/api/asset?token=${encodeURIComponent(signAsset(item.preview || item.url, filename))}`,
+      download: `/api/asset?token=${encodeURIComponent(token)}&save=1`
+    };
+  });
+
+  return {
+    type: 'gallery',
+    platform: 'Instagram',
+    title,
+    creator,
+    shortcode,
+    mediaUrl,
+    imageCount: items.filter((item) => item.kind === 'image').length,
+    videoCount: items.filter((item) => item.kind === 'video').length,
+    items
+  };
+}
+
+async function fetchAsset(assetUrl) {
+  const response = await fetch(assetUrl, {
+    headers: {
+      'User-Agent': BROWSER_UA,
+      Referer: 'https://www.instagram.com/',
+      Accept: 'image/avif,image/webp,image/*,video/*,*/*;q=0.8'
+    },
+    signal: AbortSignal.timeout(60_000)
+  });
+  if (!response.ok || !response.body) {
+    throw new Error('Instagram would not hand over that file. Look up the post again.');
+  }
+  const declared = Number(response.headers.get('content-length'));
+  if (declared > MAX_ASSET_BYTES) throw new Error('That file is too large to fetch.');
+  return response;
+}
+
+async function serveAsset(requestUrl, res) {
+  const { url, filename } = verifyAsset(requestUrl.searchParams.get('token'));
+  const response = await fetchAsset(url);
+  const extension = path.extname(filename).toLowerCase();
+
+  res.writeHead(200, {
+    'Content-Type': response.headers.get('content-type') || MIME_TYPES[extension] || 'application/octet-stream',
+    'Cache-Control': 'private, max-age=600',
+    ...(response.headers.get('content-length') ? { 'Content-Length': response.headers.get('content-length') } : {}),
+    ...(requestUrl.searchParams.get('save') ? { 'Content-Disposition': contentDisposition(filename) } : {})
+  });
+
+  await pipeline(Readable.fromWeb(response.body), res);
+}
+
+const CRC_TABLE = new Int32Array(256).map((_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  return value;
+});
+
+function crc32(buffer) {
+  let crc = -1;
+  for (const byte of buffer) crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ -1) >>> 0;
+}
+
+// Minimal store-only ZIP writer: image and video bytes are already compressed,
+// so skipping deflate keeps this dependency-free without costing any size.
+const ZIP_DATE = 20513; // 2020-01-01
+const ZIP_FLAGS = 0x0800; // UTF-8 filenames
+
+function zipLocalHeader(name, crc, size) {
+  const nameBuffer = Buffer.from(name, 'utf8');
+  const header = Buffer.alloc(30);
+  header.writeUInt32LE(0x04034b50, 0);
+  header.writeUInt16LE(20, 4);
+  header.writeUInt16LE(ZIP_FLAGS, 6);
+  header.writeUInt16LE(0, 8);
+  header.writeUInt16LE(0, 10);
+  header.writeUInt16LE(ZIP_DATE, 12);
+  header.writeUInt32LE(crc, 14);
+  header.writeUInt32LE(size, 18);
+  header.writeUInt32LE(size, 22);
+  header.writeUInt16LE(nameBuffer.length, 26);
+  header.writeUInt16LE(0, 28);
+  return Buffer.concat([header, nameBuffer]);
+}
+
+function zipCentralRecord(name, crc, size, offset) {
+  const nameBuffer = Buffer.from(name, 'utf8');
+  const record = Buffer.alloc(46);
+  record.writeUInt32LE(0x02014b50, 0);
+  record.writeUInt16LE(20, 4);
+  record.writeUInt16LE(20, 6);
+  record.writeUInt16LE(ZIP_FLAGS, 8);
+  record.writeUInt16LE(0, 10);
+  record.writeUInt16LE(0, 12);
+  record.writeUInt16LE(ZIP_DATE, 14);
+  record.writeUInt32LE(crc, 16);
+  record.writeUInt32LE(size, 20);
+  record.writeUInt32LE(size, 24);
+  record.writeUInt16LE(nameBuffer.length, 28);
+  record.writeUInt32LE(offset, 42);
+  return Buffer.concat([record, nameBuffer]);
+}
+
+function zipEndRecord(count, centralSize, centralOffset) {
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(count, 8);
+  end.writeUInt16LE(count, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(centralOffset, 16);
+  return end;
+}
+
+function writeChunk(res, chunk) {
+  return new Promise((resolve, reject) => {
+    if (res.write(chunk)) {
+      resolve();
+      return;
+    }
+    res.once('drain', resolve);
+    res.once('error', reject);
+  });
+}
+
+async function downloadGalleryZip(req, res) {
+  if (activeJobs >= MAX_CONCURRENT_JOBS) {
+    sendJson(res, 429, { error: 'The downloader is busy. Try again in a moment.' });
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  const mediaUrl = normalizeMediaUrl(body.url);
+  const shortcode = instagramShortcode(mediaUrl);
+  if (!shortcode) throw new Error('Paste an Instagram post link to download a whole post.');
+
+  const post = await extractInstagramPost(shortcode);
+  if (!post) throw new Error('Could not read that post again. It may be private or rate-limited.');
+
+  const gallery = buildGallery(post, shortcode, mediaUrl);
+  activeJobs += 1;
+
+  try {
+    res.writeHead(200, {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': contentDisposition(`${sanitizeFilename(`instagram-${shortcode}`)}.zip`),
+      'Cache-Control': 'no-store'
+    });
+
+    const central = [];
+    let offset = 0;
+
+    for (const [index, item] of post.items.entries()) {
+      const name = gallery.items[index].filename;
+      const response = await fetchAsset(item.url);
+      const data = Buffer.from(await response.arrayBuffer());
+      if (data.length > MAX_ASSET_BYTES || offset + data.length > MAX_ZIP_BYTES) {
+        throw new Error('This post is too large to bundle.');
+      }
+
+      const crc = crc32(data);
+      const header = zipLocalHeader(name, crc, data.length);
+      await writeChunk(res, header);
+      await writeChunk(res, data);
+      central.push(zipCentralRecord(name, crc, data.length, offset));
+      offset += header.length + data.length;
+    }
+
+    const directory = Buffer.concat(central);
+    await writeChunk(res, directory);
+    await writeChunk(res, zipEndRecord(central.length, directory.length, offset));
+    res.end();
+  } finally {
+    activeJobs -= 1;
+  }
+}
+
 async function inspectMedia(req, res) {
   const body = await readJsonBody(req);
   const mediaUrl = normalizeMediaUrl(body.url);
+  const shortcode = instagramShortcode(mediaUrl);
+  let gallery = null;
+
+  if (shortcode) {
+    const post = await extractInstagramPost(shortcode).catch(() => null);
+    if (post) gallery = buildGallery(post, shortcode, mediaUrl);
+  }
+
+  // A lone video is better served by yt-dlp, which offers quality and audio options.
+  if (gallery && (gallery.items.length > 1 || gallery.items[0].kind === 'image')) {
+    sendJson(res, 200, gallery);
+    return;
+  }
+
+  try {
+    await inspectVideo(mediaUrl, res);
+  } catch (error) {
+    if (gallery) {
+      sendJson(res, 200, gallery);
+      return;
+    }
+    if (shortcode && /no video formats|there is no video/i.test(error.message || '')) {
+      throw new Error(
+        'Could not read this Instagram post. It may be private, or Instagram is rate-limiting this server.'
+      );
+    }
+    throw error;
+  }
+}
+
+async function inspectVideo(mediaUrl, res) {
   const output = await runYtDlp([
     '--dump-single-json',
     '--no-playlist',
@@ -226,6 +694,7 @@ async function inspectMedia(req, res) {
   }
 
   sendJson(res, 200, {
+    type: 'video',
     title: String(info.title || 'Untitled video').slice(0, 300),
     creator: String(info.uploader || info.channel || info.creator || 'Unknown creator').slice(0, 160),
     duration: Number(info.duration) || null,
@@ -371,6 +840,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/download') {
       await downloadMedia(req, res);
+      return;
+    }
+    if (req.method === 'POST' && requestUrl.pathname === '/api/gallery-zip') {
+      await downloadGalleryZip(req, res);
+      return;
+    }
+    if (req.method === 'GET' && requestUrl.pathname === '/api/asset') {
+      await serveAsset(requestUrl, res);
       return;
     }
     if (req.method === 'GET' || req.method === 'HEAD') {

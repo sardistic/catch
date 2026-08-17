@@ -6,7 +6,7 @@
     <meta name="description" content="Save public videos from YouTube, X, Instagram, and TikTok." />
     <title>Catch — save the good stuff</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=4" />
+    <link rel="stylesheet" href="/styles.css?v=5" />
     <!-- First-party analytics: self-hosted Umami, no third-party requests. -->
     <script defer src="https://analytics.sardistic.com/script.js" data-website-id="c75451e3-8eb5-476a-8be0-2c1f3cf2ba38"></script>
   </head>
@@ -26,7 +26,7 @@
       <section class="hero" aria-labelledby="hero-title">
         <div class="eyebrow"><span></span> One link. Your file.</div>
         <h1 id="hero-title">Save the<br /><em>good stuff.</em></h1>
-        <p class="intro">Videos and shorts from the places you scroll most. Paste a public link and pick your quality.</p>
+        <p class="intro">Videos, shorts, and Instagram photo posts from the places you scroll most. Paste a public link and pick your quality.</p>
 
         <form class="link-form" id="link-form">
           <label class="sr-only" for="media-url">Video URL</label>
@@ -93,6 +93,22 @@
           </button>
           <p class="download-note">Large or high-resolution videos may take a moment to prepare.</p>
         </div>
+      </section>
+
+      <section class="gallery" id="gallery" aria-labelledby="gallery-title" hidden>
+        <div class="gallery-head">
+          <div>
+            <p class="result-kicker">Ready to catch</p>
+            <h2 id="gallery-title"></h2>
+            <p class="creator" id="gallery-creator"></p>
+          </div>
+          <button class="download-button gallery-all" id="gallery-zip" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 20h14" /></svg>
+            <span>Download all</span>
+          </button>
+        </div>
+        <div class="gallery-grid" id="gallery-grid"></div>
+        <p class="download-note gallery-note">Files come straight from Instagram at the highest resolution the post offers.</p>
       </section>
 
       <section class="how-it-works" aria-labelledby="how-title">

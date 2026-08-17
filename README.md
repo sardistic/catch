@@ -2,6 +2,8 @@
 
 A small local web app for saving public videos and shorts from YouTube, X/Twitter, Instagram, and TikTok.
 
+Instagram posts that hold photos — including multi-image carousels, which `yt-dlp` cannot read — are shown as a gallery instead: save any single item, or bundle the whole post into a zip.
+
 ## Requirements
 
 - Node.js 18+
@@ -16,6 +18,15 @@ npm start
 
 Then open <http://127.0.0.1:3000>.
 
+### Instagram access
+
+Instagram serves photo posts to logged-out clients but rate-limits aggressively per IP. If posts start failing with "private or rate-limited", set a cookie header from a logged-in browser session:
+
+```powershell
+$env:INSTAGRAM_COOKIE = "sessionid=…; csrftoken=…"
+npm start
+```
+
 ## Container
 
 ```powershell
@@ -23,4 +34,4 @@ docker build -t catch .
 docker run --rm -p 3000:3000 catch
 ```
 
-Catch only accepts supported platform URLs, processes one item rather than playlists, limits concurrent jobs, and deletes temporary files after each response. Only download media you own or have permission to save. Platform terms and copyright rules still apply.
+Catch only accepts supported platform URLs, limits concurrent jobs, and deletes temporary files after each response. Instagram media is proxied through `/api/asset`, which only accepts HMAC-signed, short-lived links to Instagram's own CDN hosts, so it cannot be used as an open proxy. Only download media you own or have permission to save. Platform terms and copyright rules still apply.
