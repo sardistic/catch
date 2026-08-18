@@ -2,3 +2,7 @@ downloads/
 node_modules/
 .DS_Store
 *.log
+
+# Agent handoff notes stay local. They are written after the deploy, so
+# committing them leaves every deploy checkout one commit behind GitHub.
+docs/agent/HANDOFF.md
