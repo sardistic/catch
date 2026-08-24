@@ -2,7 +2,10 @@ FROM node:20-bookworm-slim
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates ffmpeg python3 python3-pip \
-  && python3 -m pip install --no-cache-dir --break-system-packages yt-dlp \
+  # yt-dlp-ejs carries the JavaScript YouTube demands be run to sign media
+  # URLs. Without it every download 403s. It needs a JS runtime; this is a
+  # node image, so node serves and no separate Deno install is needed.
+  && python3 -m pip install --no-cache-dir --break-system-packages yt-dlp yt-dlp-ejs \
   && apt-get purge -y python3-pip \
   && apt-get autoremove -y \
   && rm -rf /var/lib/apt/lists/*

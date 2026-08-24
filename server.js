@@ -144,9 +144,15 @@ function readJsonBody(req) {
   });
 }
 
+// YouTube signs media URLs with a JavaScript challenge; yt-dlp needs a runtime
+// to solve it, or every download comes back 403. Only Deno is enabled by
+// default and the image does not carry one, so node — already here, and the
+// next runtime down — is enabled explicitly for every call.
+const YT_DLP_RUNTIME_ARGS = ['--js-runtimes', 'node'];
+
 function runYtDlp(args, { timeout = 45_000, maxOutput = MAX_METADATA_BYTES } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('yt-dlp', args, {
+    const child = spawn('yt-dlp', [...YT_DLP_RUNTIME_ARGS, ...args], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
