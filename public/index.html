@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Save public videos from YouTube, X, Instagram, and TikTok." />
+    <meta name="description" content="Save public videos, playlists, and photo posts from YouTube, X, Instagram, and TikTok." />
     <title>Catch — save the good stuff</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=5" />
+    <link rel="stylesheet" href="/styles.css?v=6" />
     <!-- First-party analytics: self-hosted Umami, no third-party requests. -->
     <script defer src="https://analytics.sardistic.com/script.js" data-website-id="c75451e3-8eb5-476a-8be0-2c1f3cf2ba38"></script>
   </head>
@@ -26,13 +26,13 @@
       <section class="hero" aria-labelledby="hero-title">
         <div class="eyebrow"><span></span> One link. Your file.</div>
         <h1 id="hero-title">Save the<br /><em>good stuff.</em></h1>
-        <p class="intro">Videos, shorts, and Instagram photo posts from the places you scroll most. Paste a public link and pick your quality.</p>
+        <p class="intro">Videos, shorts, whole playlists, and Instagram photo posts from the places you scroll most. Paste a public link and pick your quality.</p>
 
         <form class="link-form" id="link-form">
           <label class="sr-only" for="media-url">Video URL</label>
           <div class="input-wrap">
             <svg class="link-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1" /></svg>
-            <input id="media-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste a video link here…" required />
+            <input id="media-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste a video or playlist link here…" required />
             <button class="paste-button" id="paste-button" type="button">Paste</button>
           </div>
           <button class="primary-button" id="inspect-button" type="submit">
@@ -92,7 +92,33 @@
             <span>Download video</span>
           </button>
           <p class="download-note">Large or high-resolution videos may take a moment to prepare.</p>
+
+          <p class="playlist-offer" id="playlist-offer" hidden>
+            This video sits in a playlist.
+            <button type="button" id="playlist-load">Grab the whole playlist as MP3</button>
+          </p>
         </div>
+      </section>
+
+      <section class="gallery playlist" id="playlist" aria-labelledby="playlist-title" hidden>
+        <div class="gallery-head">
+          <div>
+            <p class="result-kicker">Ready to catch</p>
+            <h2 id="playlist-title"></h2>
+            <p class="creator" id="playlist-creator"></p>
+          </div>
+          <button class="download-button gallery-all" id="playlist-zip" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M5 20h14" /></svg>
+            <span>Download MP3s</span>
+          </button>
+        </div>
+        <div class="playlist-tools">
+          <button class="chip-button" id="playlist-all" type="button">Select all</button>
+          <button class="chip-button" id="playlist-none" type="button">Clear</button>
+          <span class="playlist-count" id="playlist-count" aria-live="polite"></span>
+        </div>
+        <ul class="track-list" id="playlist-list"></ul>
+        <p class="download-note gallery-note" id="playlist-note"></p>
       </section>
 
       <section class="gallery" id="gallery" aria-labelledby="gallery-title" hidden>
@@ -115,8 +141,8 @@
         <p class="section-number">01 — 03</p>
         <h2 id="how-title">Simple by design.</h2>
         <div class="steps">
-          <article><span>01</span><h3>Paste</h3><p>Drop in a public video or short link.</p></article>
-          <article><span>02</span><h3>Choose</h3><p>Pick video, audio, and the quality you want.</p></article>
+          <article><span>01</span><h3>Paste</h3><p>Drop in a public video, short, or playlist link.</p></article>
+          <article><span>02</span><h3>Choose</h3><p>Pick video, audio, quality — or the tracks you want.</p></article>
           <article><span>03</span><h3>Catch</h3><p>Save the file directly to your device.</p></article>
         </div>
       </section>

@@ -26,6 +26,12 @@ const ASSET_HOST_PATTERN = /(^|\.)(cdninstagram\.com|fbcdn\.net)$/;
 const MAX_ASSET_BYTES = 120 * 1024 * 1024;
 const MAX_ZIP_BYTES = 600 * 1024 * 1024;
 
+const MAX_PLAYLIST_ITEMS = 200;
+const MAX_BATCH_ITEMS = 50;
+const PLAYLIST_READ_TIMEOUT_MS = 90 * 1000;
+const TRACK_TIMEOUT_MS = 10 * 60 * 1000;
+const UNAVAILABLE_ENTRY = /^\[(private|deleted|unavailable|removed)/i;
+
 const SUPPORTED_HOSTS = [
   'youtube.com',
   'youtu.be',
@@ -217,6 +223,100 @@ function availableQualities(formats = []) {
   }
   options.push({ value: 'best', label: 'Best' });
   return options;
+}
+
+// A YouTube link carries its playlist in `list=`. A bare /playlist link *is*
+// the playlist; a watch link that also has `v=` is one video inside it, so the
+// reader gets that video plus an offer to take the whole list.
+function playlistRef(mediaUrl) {
+  const parsed = new URL(mediaUrl);
+  const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+  if (!/(^|\.)(youtube\.com|youtu\.be)$/.test(host)) return null;
+
+  const id = parsed.searchParams.get('list');
+  if (!id || !/^[A-Za-z0-9_-]{2,64}$/.test(id)) return null;
+
+  const video = host === 'youtu.be' ? parsed.pathname.replace(/^\//, '') : parsed.searchParams.get('v');
+  return {
+    id,
+    url: `https://www.youtube.com/playlist?list=${id}`,
+    isSingleVideo: Boolean(video)
+  };
+}
+
+function playlistEntry(entry, index) {
+  const title = String(entry.title || '').trim();
+  // yt-dlp still lists videos it cannot reach, as "[Private video]" and friends.
+  if (!title || UNAVAILABLE_ENTRY.test(title)) return null;
+
+  const url =
+    typeof entry.url === 'string' && /^https?:/.test(entry.url)
+      ? entry.url
+      : entry.id
+        ? `https://www.youtube.com/watch?v=${entry.id}`
+        : null;
+  if (!url) return null;
+
+  return {
+    index,
+    title: title.slice(0, 300),
+    creator: String(entry.channel || entry.uploader || '').slice(0, 160) || null,
+    duration: Number(entry.duration) || null,
+    // Thumbnails come smallest first, so the last one is the largest offered.
+    thumbnail: entry.thumbnails?.at(-1)?.url || entry.thumbnail || null,
+    url
+  };
+}
+
+// `--flat-playlist` lists a whole playlist from one request instead of probing
+// every video, which is the difference between a second and several minutes.
+async function readPlaylist(playlistUrl) {
+  const output = await runYtDlp(
+    [
+      '--dump-single-json',
+      '--flat-playlist',
+      '--yes-playlist',
+      '--skip-download',
+      '--no-warnings',
+      '--playlist-end',
+      String(MAX_PLAYLIST_ITEMS),
+      '--socket-timeout',
+      '15',
+      playlistUrl
+    ],
+    { timeout: PLAYLIST_READ_TIMEOUT_MS }
+  );
+
+  const info = JSON.parse(output);
+  const entries = (info.entries || [])
+    .map((entry, position) => playlistEntry(entry, position + 1))
+    .filter(Boolean);
+  if (!entries.length) {
+    throw new Error('That link is not a playlist, or the playlist is private and has nothing we can reach.');
+  }
+
+  return {
+    title: String(info.title || 'Untitled playlist').slice(0, 300),
+    creator: String(info.channel || info.uploader || 'Unknown creator').slice(0, 160),
+    total: Number(info.playlist_count) || entries.length,
+    entries
+  };
+}
+
+async function inspectPlaylist(playlistUrl, res) {
+  const playlist = await readPlaylist(playlistUrl);
+
+  sendJson(res, 200, {
+    type: 'playlist',
+    platform: getPlatform({}, playlistUrl),
+    title: playlist.title,
+    creator: playlist.creator,
+    total: playlist.total,
+    listed: playlist.entries.length,
+    batchLimit: MAX_BATCH_ITEMS,
+    mediaUrl: playlistUrl,
+    items: playlist.entries
+  });
 }
 
 function instagramShortcode(mediaUrl) {
@@ -584,6 +684,111 @@ function writeChunk(res, chunk) {
   });
 }
 
+// Both batch endpoints stream a zip the same way: append each file as soon as
+// its bytes are in hand, then close with the central directory.
+function createZipWriter(res) {
+  const central = [];
+  let offset = 0;
+
+  return {
+    get remaining() {
+      return MAX_ZIP_BYTES - offset;
+    },
+    async add(name, data) {
+      const crc = crc32(data);
+      const header = zipLocalHeader(name, crc, data.length);
+      await writeChunk(res, header);
+      await writeChunk(res, data);
+      central.push(zipCentralRecord(name, crc, data.length, offset));
+      offset += header.length + data.length;
+    },
+    async finish() {
+      const directory = Buffer.concat(central);
+      await writeChunk(res, directory);
+      await writeChunk(res, zipEndRecord(central.length, directory.length, offset));
+      res.end();
+    }
+  };
+}
+
+function selectedEntries(requested, entries) {
+  if (!Array.isArray(requested) || !requested.length) return entries;
+  const wanted = new Set(requested.map(Number).filter(Number.isInteger));
+  return entries.filter((entry) => wanted.has(entry.index));
+}
+
+async function downloadPlaylistZip(req, res) {
+  if (activeJobs >= MAX_CONCURRENT_JOBS) {
+    sendJson(res, 429, { error: 'The downloader is busy. Try again in a moment.' });
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  const mediaUrl = normalizeMediaUrl(body.url);
+  const playlist = await readPlaylist(playlistRef(mediaUrl)?.url || mediaUrl);
+  const wanted = selectedEntries(body.indexes, playlist.entries);
+
+  if (!wanted.length) throw new Error('Pick at least one track to download.');
+  if (wanted.length > MAX_BATCH_ITEMS) {
+    throw new Error(`Batches are limited to ${MAX_BATCH_ITEMS} tracks at a time.`);
+  }
+
+  const jobRoot = path.join(os.tmpdir(), `catch-${crypto.randomBytes(12).toString('hex')}`);
+  await fs.mkdir(jobRoot, { recursive: true });
+  activeJobs += 1;
+
+  try {
+    res.writeHead(200, {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': contentDisposition(`${sanitizeFilename(playlist.title)}.zip`),
+      'Cache-Control': 'no-store'
+    });
+
+    const zip = createZipWriter(res);
+    const skipped = [];
+    let full = false;
+
+    for (const entry of wanted) {
+      const trackDir = path.join(jobRoot, String(entry.index));
+      try {
+        if (full) throw new Error('the batch had already hit its size limit');
+        await fs.mkdir(trackDir, { recursive: true });
+        const filePath = await runMediaDownload(entry.url, trackDir, {
+          kind: 'audio',
+          quality: 'best',
+          timeout: TRACK_TIMEOUT_MS
+        });
+
+        const data = await fs.readFile(filePath);
+        if (data.length > zip.remaining) {
+          full = true;
+          throw new Error('the batch hit its size limit');
+        }
+        await zip.add(`${String(entry.index).padStart(2, '0')} ${sanitizeFilename(entry.title)}.mp3`, data);
+      } catch (error) {
+        // The zip is already streaming, so one unreachable track cannot become
+        // an error response — note it in the archive and carry on.
+        skipped.push(`${entry.index}. ${entry.title} - ${error.message || 'could not be downloaded'}`);
+      } finally {
+        await fs.rm(trackDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+
+    if (skipped.length) {
+      await zip.add('skipped-tracks.txt', Buffer.from(`${skipped.join('\n')}\n`, 'utf8'));
+    }
+    await zip.finish();
+  } finally {
+    activeJobs -= 1;
+    await fs.rm(jobRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 150
+    }).catch(() => {});
+  }
+}
+
 async function downloadGalleryZip(req, res) {
   if (activeJobs >= MAX_CONCURRENT_JOBS) {
     sendJson(res, 429, { error: 'The downloader is busy. Try again in a moment.' });
@@ -608,29 +813,18 @@ async function downloadGalleryZip(req, res) {
       'Cache-Control': 'no-store'
     });
 
-    const central = [];
-    let offset = 0;
+    const zip = createZipWriter(res);
 
     for (const [index, item] of post.items.entries()) {
-      const name = gallery.items[index].filename;
       const response = await fetchAsset(item.url);
       const data = Buffer.from(await response.arrayBuffer());
-      if (data.length > MAX_ASSET_BYTES || offset + data.length > MAX_ZIP_BYTES) {
+      if (data.length > MAX_ASSET_BYTES || data.length > zip.remaining) {
         throw new Error('This post is too large to bundle.');
       }
-
-      const crc = crc32(data);
-      const header = zipLocalHeader(name, crc, data.length);
-      await writeChunk(res, header);
-      await writeChunk(res, data);
-      central.push(zipCentralRecord(name, crc, data.length, offset));
-      offset += header.length + data.length;
+      await zip.add(gallery.items[index].filename, data);
     }
 
-    const directory = Buffer.concat(central);
-    await writeChunk(res, directory);
-    await writeChunk(res, zipEndRecord(central.length, directory.length, offset));
-    res.end();
+    await zip.finish();
   } finally {
     activeJobs -= 1;
   }
@@ -639,6 +833,13 @@ async function downloadGalleryZip(req, res) {
 async function inspectMedia(req, res) {
   const body = await readJsonBody(req);
   const mediaUrl = normalizeMediaUrl(body.url);
+  const playlist = playlistRef(mediaUrl);
+
+  if (playlist && !playlist.isSingleVideo) {
+    await inspectPlaylist(playlist.url, res);
+    return;
+  }
+
   const shortcode = instagramShortcode(mediaUrl);
   let gallery = null;
 
@@ -654,7 +855,9 @@ async function inspectMedia(req, res) {
   }
 
   try {
-    await inspectVideo(mediaUrl, res);
+    // An Instagram carousel also arrives as a yt-dlp "playlist", so only
+    // non-Instagram links may be re-read as a batch.
+    await inspectVideo(mediaUrl, res, { allowPlaylist: !shortcode });
   } catch (error) {
     if (gallery) {
       sendJson(res, 200, gallery);
@@ -669,7 +872,7 @@ async function inspectMedia(req, res) {
   }
 }
 
-async function inspectVideo(mediaUrl, res) {
+async function inspectVideo(mediaUrl, res, { allowPlaylist = true } = {}) {
   const output = await runYtDlp([
     '--dump-single-json',
     '--no-playlist',
@@ -682,8 +885,12 @@ async function inspectVideo(mediaUrl, res) {
   const info = JSON.parse(output);
 
   if (info._type === 'playlist') {
-    throw new Error('Playlists are not supported. Paste a link to one video.');
+    if (!allowPlaylist) throw new Error('Playlists are not supported. Paste a link to one video.');
+    await inspectPlaylist(mediaUrl, res);
+    return;
   }
+
+  const playlist = playlistRef(mediaUrl);
 
   sendJson(res, 200, {
     type: 'video',
@@ -693,6 +900,7 @@ async function inspectVideo(mediaUrl, res) {
     thumbnail: typeof info.thumbnail === 'string' ? info.thumbnail : null,
     platform: getPlatform(info, mediaUrl),
     qualities: availableQualities(info.formats),
+    playlist: playlist ? { id: playlist.id, url: playlist.url } : null,
     mediaUrl
   });
 }
@@ -723,6 +931,36 @@ function formatSelector(kind, quality) {
   return `bv*[height<=${height}]+ba/b[height<=${height}]`;
 }
 
+// Shared by the single download and by every track of a playlist batch.
+async function runMediaDownload(mediaUrl, jobDir, { kind, quality, timeout }) {
+  const args = [
+    '--no-playlist',
+    '--no-warnings',
+    '--socket-timeout',
+    '20',
+    '--max-filesize',
+    '2G',
+    '-f',
+    formatSelector(kind, quality),
+    '-P',
+    jobDir,
+    '-o',
+    'media.%(ext)s'
+  ];
+
+  if (kind === 'audio') {
+    args.push('-x', '--audio-format', 'mp3', '--audio-quality', '0');
+  } else {
+    args.push('--merge-output-format', 'mp4', '--remux-video', 'mp4');
+  }
+  args.push(mediaUrl);
+
+  await runYtDlp(args, { timeout, maxOutput: 2 * 1024 * 1024 });
+  const files = (await fs.readdir(jobDir)).filter((name) => name.startsWith('media.'));
+  if (!files.length) throw new Error('The download finished without producing a file.');
+  return path.join(jobDir, files[0]);
+}
+
 async function downloadMedia(req, res) {
   if (activeJobs >= MAX_CONCURRENT_JOBS) {
     sendJson(res, 429, { error: 'The downloader is busy. Try again in a moment.' });
@@ -733,7 +971,6 @@ async function downloadMedia(req, res) {
   const mediaUrl = normalizeMediaUrl(body.url);
   const kind = body.kind === 'audio' ? 'audio' : 'video';
   const quality = String(body.quality || 'best');
-  const selector = formatSelector(kind, quality);
   const title = sanitizeFilename(body.title);
   const jobId = crypto.randomBytes(12).toString('hex');
   const jobDir = path.join(os.tmpdir(), `catch-${jobId}`);
@@ -741,33 +978,11 @@ async function downloadMedia(req, res) {
   activeJobs += 1;
 
   try {
-    const args = [
-      '--no-playlist',
-      '--no-warnings',
-      '--socket-timeout',
-      '20',
-      '--max-filesize',
-      '2G',
-      '-f',
-      selector,
-      '-P',
-      jobDir,
-      '-o',
-      'media.%(ext)s'
-    ];
-
-    if (kind === 'audio') {
-      args.push('-x', '--audio-format', 'mp3', '--audio-quality', '0');
-    } else {
-      args.push('--merge-output-format', 'mp4', '--remux-video', 'mp4');
-    }
-    args.push(mediaUrl);
-
-    await runYtDlp(args, { timeout: JOB_TIMEOUT_MS, maxOutput: 2 * 1024 * 1024 });
-    const files = (await fs.readdir(jobDir)).filter((name) => name.startsWith('media.'));
-    if (!files.length) throw new Error('The download finished without producing a file.');
-
-    const filePath = path.join(jobDir, files[0]);
+    const filePath = await runMediaDownload(mediaUrl, jobDir, {
+      kind,
+      quality,
+      timeout: JOB_TIMEOUT_MS
+    });
     const stats = await fs.stat(filePath);
     const extension = path.extname(filePath).toLowerCase() || (kind === 'audio' ? '.mp3' : '.mp4');
     const mime = kind === 'audio' ? 'audio/mpeg' : extension === '.webm' ? 'video/webm' : 'video/mp4';
@@ -832,6 +1047,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/download') {
       await downloadMedia(req, res);
+      return;
+    }
+    if (req.method === 'POST' && requestUrl.pathname === '/api/playlist-zip') {
+      await downloadPlaylistZip(req, res);
       return;
     }
     if (req.method === 'POST' && requestUrl.pathname === '/api/gallery-zip') {
