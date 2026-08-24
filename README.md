@@ -6,6 +6,8 @@ Instagram posts that hold photos — including multi-image carousels, which `yt-
 
 A YouTube playlist link is listed as its tracks: tick the ones you want and take them as a zip of MP3s, or save any single track on its own. A video link that carries a `list=` still opens as that one video, with an offer to load the playlist behind it. Batches are capped at 50 tracks and 600 MB; anything unreachable is recorded in `skipped-tracks.txt` inside the zip rather than failing the whole batch.
 
+The page ships dark by default; a header toggle switches to the original light theme and remembers the choice in `localStorage`.
+
 ## Requirements
 
 - Node.js 18+

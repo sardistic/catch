@@ -19,7 +19,9 @@ const galleryCreator = document.querySelector('#gallery-creator');
 const galleryGrid = document.querySelector('#gallery-grid');
 const galleryZipButton = document.querySelector('#gallery-zip');
 const playlistOffer = document.querySelector('#playlist-offer');
+const playlistOfferText = document.querySelector('#playlist-offer-text');
 const playlistLoadButton = document.querySelector('#playlist-load');
+const themeToggle = document.querySelector('#theme-toggle');
 const playlist = document.querySelector('#playlist');
 const playlistTitle = document.querySelector('#playlist-title');
 const playlistCreator = document.querySelector('#playlist-creator');
@@ -35,6 +37,25 @@ let galleryData = null;
 let playlistData = null;
 let selectedKind = 'video';
 let selectedQuality = 'best';
+
+// theme.js has already applied any stored choice; dark is the default, so an
+// absent attribute means dark.
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  themeToggle.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
+}
+
+applyTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+
+themeToggle.addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  applyTheme(next);
+  try {
+    localStorage.setItem('catch-theme', next);
+  } catch {
+    // Nothing to do — the choice just will not survive a reload.
+  }
+});
 
 function showStatus(message, type = 'error') {
   statusBox.textContent = message;
@@ -59,6 +80,16 @@ function formatDuration(seconds) {
   return hours
     ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remaining).padStart(2, '0')}`
     : `${minutes}:${String(remaining).padStart(2, '0')}`;
+}
+
+async function requestInspect(url) {
+  const response = await fetch('/api/inspect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url })
+  });
+  if (!response.ok) throw new Error(await readApiError(response));
+  return response.json();
 }
 
 async function readApiError(response) {
@@ -124,6 +155,9 @@ function renderResult(data) {
   downloadButton.querySelector('span').textContent = 'Download video';
   renderQualities(data.qualities);
   playlistOffer.hidden = !data.playlist;
+  playlistOffer.classList.remove('failed');
+  playlistOfferText.textContent = 'This video sits in a playlist.';
+  playlistLoadButton.hidden = false;
   result.hidden = false;
   result.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
@@ -305,10 +339,32 @@ function setAllTracks(checked) {
 playlistAllButton.addEventListener('click', () => setAllTracks(true));
 playlistNoneButton.addEventListener('click', () => setAllTracks(false));
 
-playlistLoadButton.addEventListener('click', () => {
+playlistLoadButton.addEventListener('click', async () => {
   if (!media?.playlist) return;
-  urlInput.value = media.playlist.url;
-  form.requestSubmit();
+  const url = media.playlist.url;
+  playlistLoadButton.disabled = true;
+  const original = playlistLoadButton.textContent;
+  playlistLoadButton.textContent = 'Loading the playlist…';
+
+  try {
+    const data = await requestInspect(url);
+    if (data.type !== 'playlist') throw new Error('That link did not come back as a playlist.');
+    urlInput.value = url;
+    media = null;
+    result.hidden = true;
+    hideStatus();
+    renderPlaylist(data);
+  } catch (error) {
+    // A `list=` in a URL is only a claim, and plenty of them point at playlists
+    // that no longer exist. The video on screen is still downloadable, so say
+    // what went wrong in place rather than replacing the result with an error.
+    playlistOffer.classList.add('failed');
+    playlistOfferText.textContent = error.message || 'That playlist could not be read.';
+    playlistLoadButton.hidden = true;
+  } finally {
+    playlistLoadButton.disabled = false;
+    playlistLoadButton.textContent = original;
+  }
 });
 
 playlistZipButton.addEventListener('click', async () => {
@@ -356,13 +412,7 @@ form.addEventListener('submit', async (event) => {
   showStatus('Reading the link and checking available formats…', 'loading');
 
   try {
-    const response = await fetch('/api/inspect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
-    });
-    if (!response.ok) throw new Error(await readApiError(response));
-    const data = await response.json();
+    const data = await requestInspect(url);
     hideStatus();
     media = null;
     galleryData = null;

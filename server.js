@@ -31,6 +31,9 @@ const MAX_BATCH_ITEMS = 50;
 const PLAYLIST_READ_TIMEOUT_MS = 90 * 1000;
 const TRACK_TIMEOUT_MS = 10 * 60 * 1000;
 const UNAVAILABLE_ENTRY = /^\[(private|deleted|unavailable|removed)/i;
+const PLAYLIST_MISSING = /does not exist|unable to recognize playlist|no longer available/i;
+const PLAYLIST_GONE =
+  'YouTube says that playlist is gone — it was probably deleted or made private. The video itself still works.';
 
 const SUPPORTED_HOSTS = [
   'youtube.com',
@@ -271,7 +274,26 @@ function playlistEntry(entry, index) {
 // `--flat-playlist` lists a whole playlist from one request instead of probing
 // every video, which is the difference between a second and several minutes.
 async function readPlaylist(playlistUrl) {
-  const output = await runYtDlp(
+  const output = await readPlaylistJson(playlistUrl);
+
+  const info = JSON.parse(output);
+  const entries = (info.entries || [])
+    .map((entry, position) => playlistEntry(entry, position + 1))
+    .filter(Boolean);
+  if (!entries.length) {
+    throw new Error(PLAYLIST_GONE);
+  }
+
+  return {
+    title: String(info.title || 'Untitled playlist').slice(0, 300),
+    creator: String(info.channel || info.uploader || 'Unknown creator').slice(0, 160),
+    total: Number(info.playlist_count) || entries.length,
+    entries
+  };
+}
+
+function readPlaylistJson(playlistUrl) {
+  return runYtDlp(
     [
       '--dump-single-json',
       '--flat-playlist',
@@ -285,22 +307,14 @@ async function readPlaylist(playlistUrl) {
       playlistUrl
     ],
     { timeout: PLAYLIST_READ_TIMEOUT_MS }
-  );
-
-  const info = JSON.parse(output);
-  const entries = (info.entries || [])
-    .map((entry, position) => playlistEntry(entry, position + 1))
-    .filter(Boolean);
-  if (!entries.length) {
-    throw new Error('That link is not a playlist, or the playlist is private and has nothing we can reach.');
-  }
-
-  return {
-    title: String(info.title || 'Untitled playlist').slice(0, 300),
-    creator: String(info.channel || info.uploader || 'Unknown creator').slice(0, 160),
-    total: Number(info.playlist_count) || entries.length,
-    entries
-  };
+  ).catch((error) => {
+    // A `list=` in a URL is only a claim. YouTube hands out watch links whose
+    // playlist was long since deleted, and yt-dlp then either refuses the list
+    // outright or quietly falls back to the one video — both mean the same
+    // thing to a reader, so they get the same sentence.
+    if (PLAYLIST_MISSING.test(error.message || '')) throw new Error(PLAYLIST_GONE);
+    throw error;
+  });
 }
 
 async function inspectPlaylist(playlistUrl, res) {

@@ -6,7 +6,9 @@
     <meta name="description" content="Save public videos, playlists, and photo posts from YouTube, X, Instagram, and TikTok." />
     <title>Catch — save the good stuff</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/styles.css?v=6" />
+    <link rel="stylesheet" href="/styles.css?v=7" />
+    <!-- Sets the stored theme before first paint; must not be deferred. -->
+    <script src="/theme.js?v=1"></script>
     <!-- First-party analytics: self-hosted Umami, no third-party requests. -->
     <script defer src="https://analytics.sardistic.com/script.js" data-website-id="c75451e3-8eb5-476a-8be0-2c1f3cf2ba38"></script>
   </head>
@@ -19,7 +21,13 @@
         </span>
         <span>catch</span>
       </a>
-      <p class="header-note">Public media, made portable.</p>
+      <div class="header-side">
+        <p class="header-note">Public media, made portable.</p>
+        <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to light theme">
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.1" /><path d="M12 2.2v2.4M12 19.4v2.4M4.4 4.4l1.7 1.7M17.9 17.9l1.7 1.7M2.2 12h2.4M19.4 12h2.4M4.4 19.6l1.7-1.7M17.9 6.1l1.7-1.7" /></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.6A8.6 8.6 0 0 1 9.4 3.5a8.6 8.6 0 1 0 11.1 11.1Z" /></svg>
+        </button>
+      </div>
     </header>
 
     <main>
@@ -94,7 +102,7 @@
           <p class="download-note">Large or high-resolution videos may take a moment to prepare.</p>
 
           <p class="playlist-offer" id="playlist-offer" hidden>
-            This video sits in a playlist.
+            <span id="playlist-offer-text">This video sits in a playlist.</span>
             <button type="button" id="playlist-load">Grab the whole playlist as MP3</button>
           </p>
         </div>
